@@ -1,5 +1,4 @@
 https://github.com/kuzeyron/buildozer/archive/refs/heads/cutouts.zip
 Cython==0.29.36
 Kivy>=2.2.1
-pillow
 opencv-contrib-python
