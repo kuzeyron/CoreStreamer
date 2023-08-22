@@ -24,7 +24,7 @@ class Stream(Image):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server = socket(AF_INET, SOCK_STREAM)
-        self.payload_size = calcsize("L")
+        self.payload_size = calcsize("Q")
         self.data = b''
         self._bytesio = BytesIO()
 
@@ -33,7 +33,7 @@ class Stream(Image):
             self.server.connect(tuple(x for x in self.host))
         except Exception:
             sleep(1)
-            self.on_server()
+            Clock.schedule_once(self.on_server, 1)
         finally:
             Thread(target=self.update, daemon=True).start()
 
@@ -44,14 +44,14 @@ class Stream(Image):
             data = self.data
 
             while len(data) < payload_size:
-                data += self.server.recv(4096)
+                data += self.server.recv(1024)
 
             packed_msg_size = data[:payload_size]
             data = data[payload_size:]
-            msg_size = unpack("L", packed_msg_size)[0]
+            msg_size = unpack("Q", packed_msg_size)[0]
 
             while len(data) < msg_size:
-                data += self.server.recv(4096)
+                data += self.server.recv(1024)
 
             self._bytesio.write(data[:msg_size])
             self.data = data[msg_size:]

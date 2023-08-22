@@ -10,8 +10,10 @@ from cv2 import (CAP_PROP_POS_FRAMES, IMWRITE_JPEG_QUALITY, INTER_AREA,
                  VideoCapture, imencode, resize)
 
 
-def get_time():
-    return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+def log(text=None, prompt_user=None, has_arg=None, *largs):
+    time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    has_arg = f': {has_arg}' if has_arg else ''
+    logging.info(f"[ {prompt_user} ][ {time} ] {text}{has_arg}.")
 
 
 class Device:
@@ -33,7 +35,7 @@ class Device:
         for key, value in kwargs.items():
             if getattr(self, key, None):
                 setattr(self, key, value)
-                self.sent_arguments += f"{key}={value}, "
+                self.sent_arguments += f'{key}={value}, '
 
         self.isrunning = True
         target = getattr(self, self.device_type, None)
@@ -46,10 +48,8 @@ class Device:
         cap = VideoCapture(self.source)
         self._fps = cap.get(CAP_PROP_POS_FRAMES) or (1. / self.fps)
         quality = [int(IMWRITE_JPEG_QUALITY), self.quality]
-        logging.info('[ %s ][ %s ] is now running with arguments: "%s."',
-                     self.device_type.upper(),
-                     get_time(),
-                     self.sent_arguments[:-2])
+        log('Is now running with arguments', self.device_type.upper(),
+            f'"{self.sent_arguments[:-2]}"')
 
         while cap.isOpened() and self.isrunning:
             ret, image = cap.read()
@@ -68,8 +68,10 @@ class FeedStream:
     device_type = 'video'
     fps: int = 60
     host: tuple = ('0.0.0.0', 6666)
-    ipv4_allowed: list = ['192.168.0.']
+    ipv4_allowed: tuple = ('192.168.0.', )
     quality: int = 100
+    prompt_user: str = 'SERVER'
+    source: str = 'test.mp4'
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
@@ -81,8 +83,8 @@ class FeedStream:
         self.server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self.server.bind(self.host)
         self.server.listen(10)
-        logging.info("[ SERVER ][ %s ] Initialized the socket protocol.",
-                     get_time())
+        log('Initialized the socket protocol', self.prompt_user)
+        self.first_listener = True
         self.listen()
 
     @property
@@ -94,17 +96,20 @@ class FeedStream:
         self._active_sessions = max(0, value)
         self.device.listeners = self._active_sessions
 
-        if self._active_sessions == 1:
+        if self._active_sessions == 1 and self.first_listener:
             self.device.run(fps=self.fps, quality=self.quality,
-                            device_type=self.device_type)
+                            device_type=self.device_type,
+                            source=self.source)
+            self.first_listener = False
 
         if self._active_sessions == 0:
             self.device.isrunning = False
+            self.first_listener = True
             sleep(.1)
             self.device.frame_buffer = b''
 
-        logging.info("[ SERVER ][ %s ] List of active users: (%s).",
-                     get_time(), ', '.join(self.active_addresses) or 'None')
+        log('List of active users', self.prompt_user,
+            f"({', '.join(self.active_addresses) or 'None'})")
 
     @active_sessions.getter
     def active_sessions(self):
@@ -128,8 +133,8 @@ class FeedStream:
         self.active_addresses.append(user)
         self.active_sessions += 1
         data = b''
-        logging.info(("[ SERVER ][ %s ] %s is now connected and "
-                      "ready to stream."), get_time(), user)
+        log('Is now connected and ready to stream',
+            self.prompt_user, f'"{user}"')
 
         while self.active_sessions > 0:
             try:
@@ -137,10 +142,10 @@ class FeedStream:
 
                 if self.device.frame:
                     data = self.device.frame
-                    message_size = pack("i", len(data))
+                    message_size = pack("Q", len(data))
                     client.sendall(message_size + data)
 
-                sleep(max(self.device._fps - (t1 - perf_counter()), .05))
+                sleep(max(self.device._fps - (t1 - perf_counter()), 0))
 
             except Exception:
                 break
@@ -148,8 +153,7 @@ class FeedStream:
         if user in self.active_addresses:
             self.active_addresses.pop(self.active_addresses.index(user))
 
-        logging.info("[ SERVER ][ %s ] Disconnecting user: %s.",
-                     get_time(), user)
+        log('Disconnecting user', self.prompt_user, f'"{user}"')
         self.active_sessions -= 1
 
 
