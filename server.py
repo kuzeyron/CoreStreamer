@@ -8,6 +8,7 @@ from time import perf_counter, sleep
 
 from cv2 import (CAP_PROP_POS_FRAMES, IMWRITE_JPEG_QUALITY, INTER_AREA,
                  VideoCapture, imencode, resize)
+from numpy import uint8, zeros
 
 
 def log(text=None, prompt_user=None, has_arg=None, *largs):
@@ -28,6 +29,13 @@ class Device:
     source: str = 'test.mp4'
     videosize: tuple = (1280, 720)
 
+    def __init__(self, **kwargs):
+        self.frame_reset()
+
+    def frame_reset(self, *largs):
+        self._quality = [int(IMWRITE_JPEG_QUALITY), self.quality]
+        self.compression(zeros((*self.videosize[::-1], 3), uint8))
+
     def run(self, **kwargs):
         " Starts the feed of chosen device (camera or video) "
         self.sent_arguments = ''
@@ -47,19 +55,24 @@ class Device:
         " Video is a dummy stream that plays a video instead of camera "
         cap = VideoCapture(self.source)
         self._fps = cap.get(CAP_PROP_POS_FRAMES) or (1. / self.fps)
-        quality = [int(IMWRITE_JPEG_QUALITY), self.quality]
-        log('Is now running with arguments', self.device_type.upper(),
+        log('Is now trying to run arguments', self.device_type.upper(),
             f'"{self.sent_arguments[:-2]}"')
 
         while cap.isOpened() and self.isrunning:
-            ret, image = cap.read()
-
+            ret, frame = cap.read()
             if ret:
-                image = resize(image, self.videosize, interpolation=INTER_AREA)
-                compressed_img = imencode('.jpg', image, quality)[1]
-                self.frame = compressed_img.tobytes()
+                self.compression(frame)
             else:
                 cap.set(CAP_PROP_POS_FRAMES, 0)
+
+    def compression(self, frame):
+        " Compression for the transport with use of scaling and aspect ratio "
+        vsize, size = self.videosize, frame.shape[:2]
+        aspect_ratio = size[0] / float(size[1])
+        frame = resize(frame, (vsize[0], int(vsize[0] * aspect_ratio)),
+                       interpolation=INTER_AREA)
+        compressed_img = imencode('.jpg', frame, self._quality)[1]
+        self.frame = compressed_img.tobytes()
 
 
 class FeedStream:
@@ -72,18 +85,19 @@ class FeedStream:
     quality: int = 100
     prompt_user: str = 'SERVER'
     source: str = 'test.mp4'
+    videosize: tuple = (1280, 720)
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             if getattr(self, key, None):
                 setattr(self, key, value)
 
+        log('Initialized the socket protocol', self.prompt_user)
         self.device = Device()
         self.server = socket(AF_INET, SOCK_STREAM)
         self.server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self.server.bind(self.host)
         self.server.listen(10)
-        log('Initialized the socket protocol', self.prompt_user)
         self.first_listener = True
         self.listen()
 
@@ -99,6 +113,7 @@ class FeedStream:
         if self._active_sessions == 1 and self.first_listener:
             self.device.run(fps=self.fps, quality=self.quality,
                             device_type=self.device_type,
+                            videosize=self.videosize,
                             source=self.source)
             self.first_listener = False
 
@@ -106,7 +121,7 @@ class FeedStream:
             self.device.isrunning = False
             self.first_listener = True
             sleep(.1)
-            self.device.frame_buffer = b''
+            self.device.frame_reset()
 
         log('List of active users', self.prompt_user,
             f"({', '.join(self.active_addresses) or 'None'})")
@@ -122,10 +137,12 @@ class FeedStream:
             delivery.settimeout(10)
 
             if address[0][:10] in self.ipv4_allowed:
+                user = f"{address[0]}:{address[1]}"
                 Thread(
                     target=self.transmit_data,
-                    args=(delivery, f"{address[0]}:{address[1]}"),
-                    daemon=True
+                    args=(delivery, user),
+                    daemon=True,
+                    name=user
                 ).start()
 
     def transmit_data(self, client, user):
@@ -139,14 +156,10 @@ class FeedStream:
         while self.active_sessions > 0:
             try:
                 t1 = perf_counter()
-
-                if self.device.frame:
-                    data = self.device.frame
-                    message_size = pack("Q", len(data))
-                    client.sendall(message_size + data)
-
+                data = self.device.frame
+                message_size = pack("i", len(data))
+                client.sendall(message_size + data)
                 sleep(max(self.device._fps - (t1 - perf_counter()), 0))
-
             except Exception:
                 break
 
